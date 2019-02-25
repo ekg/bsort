@@ -13,6 +13,7 @@ main(int argc, char *argv[]) {
   int verbosity = 0;
   omp_set_num_threads(1);
   unsigned long TickStart;
+  int threads = 1;
 
   while ((opt = getopt(argc, argv, "var:k:s:c:t:w:")) != -1) {
     switch (opt) {
@@ -36,7 +37,8 @@ main(int argc, char *argv[]) {
       switch_to_shell = atoi(optarg);
       break;
     case 't':
-      omp_set_num_threads(atoi(optarg));
+      threads = atoi(optarg);
+      omp_set_num_threads(threads);
       break;
     case 'c':
       cut_off = atoi(optarg);
@@ -55,21 +57,17 @@ main(int argc, char *argv[]) {
   while(optind < argc) {
     if (verbosity)
       printf("sorting %s\n", argv[optind]);
-    struct bsort::sort sort;
-    if (-1==bsort::open_sort(argv[optind], &sort))
-      goto failure;
-
-    bsort::radixify((unsigned char*)sort.buffer,
-                    sort.size / record_size,
-                    0,
-                    char_start,
-                    char_stop,
-                    record_size,
-                    key_size,
-                    stack_size,
-                    cut_off,
-                    switch_to_shell);
-    close_sort(&sort);
+    
+    bsort::radixify_parallel(std::string(argv[optind]),
+                             0,
+                             char_start,
+                             char_stop,
+                             record_size,
+                             key_size,
+                             stack_size,
+                             cut_off,
+                             switch_to_shell,
+                             threads);
     optind++;
   }
 
