@@ -20,6 +20,7 @@
 #include <vector>
 #include <functional>
 #include <fstream>
+#include <queue>
 
 namespace bsort {
 

@@ -123,26 +123,21 @@ radixify_parallel(const std::string& base_fn,
                   const long switch_to_shell,
                   const long threads) {
 
-    temp_file::temp_dir = "./";
-    // copy the base file to a new tempfile
-    std::string temp_fn = temp_file::create(std::string(base_fn));
-    cp(base_fn, temp_fn);
-    //std::cerr << "temp file " << temp_fn << std::endl;
-    // open the tempfile
-    sort temp_s;
-    if (-1==bsort::open_sort((char*)temp_fn.c_str(), &temp_s)) {
+    // open the base file
+    sort base_s;
+    if (-1==bsort::open_sort((char*)base_fn.c_str(), &base_s)) {
         assert(false);
     }
-  
+    
     // compute starting positions of buffers
-    size_t chunk_max = temp_s.size/threads + temp_s.size%threads;
+    size_t chunk_max = base_s.size/threads + base_s.size%threads;
     //std::cerr << "Chunk max " << chunk_max << std::endl;
     unsigned char* buffer[threads];
     size_t chunk_size[threads];
     size_t start = 0;
     for (long i = 0; i < threads; ++i) {
-        buffer[i] = (unsigned char*)(temp_s.buffer) + start;
-        chunk_size[i] = (start + chunk_max > temp_s.size ? temp_s.size - start : chunk_max);
+        buffer[i] = (unsigned char*)(base_s.buffer) + start;
+        chunk_size[i] = (start + chunk_max > base_s.size ? base_s.size - start : chunk_max);
         start += chunk_size[i];
     }
     /*
@@ -151,7 +146,7 @@ radixify_parallel(const std::string& base_fn,
     }
     */
     //std::cerr << "start " << start << " temp_s.size " << temp_s.size << std::endl;
-    assert(start == temp_s.size);
+    //assert(start == base_s.size);
 
     //omp_set_nested(true);
     
@@ -173,46 +168,61 @@ radixify_parallel(const std::string& base_fn,
 
     // sorts for each chunk are done
 
-    // open the base file
-    sort base_s;
-    if (-1==bsort::open_sort((char*)base_fn.c_str(), &base_s)) {
+    // open a temp file for sorted output
+    temp_file::temp_dir = "./";
+    // copy the base file to a new tempfile
+    std::string temp_fn = temp_file::create(std::string(base_fn));
+    std::ofstream ofs(temp_fn, std::ios::binary | std::ios::out);
+    //std::cerr << "creating file buffer " << tmp_path << " of " << size << " bytes" << std::endl;
+    ofs.seekp(base_s.size - 1);
+    ofs.write("", 1);
+    ofs.close();
+    
+    //cp(base_fn, temp_fn);
+    //std::cerr << "temp file " << temp_fn << std::endl;
+    // open the tempfile
+    sort temp_s;
+    if (-1==bsort::open_sort((char*)temp_fn.c_str(), &temp_s)) {
         assert(false);
     }
 
     // map from key to offset/reader pointers
-    struct cmp_char_ptr {
-        bool operator()(const std::pair<unsigned char*, size_t>& a, const std::pair<unsigned char*, size_t>& b) const {
-            return memcmp(a.first, b.first, a.second) < 0;
+    struct data_ptr_t {
+        unsigned char* data;
+        size_t length;
+        size_t thread;
+        size_t offset;
+        data_ptr_t(unsigned char* d, size_t l, size_t t, size_t o) : data(d), length(l), thread(t), offset(o) { };
+    };
+    struct cmp_data_ptr {
+        bool operator()(const data_ptr_t& a, const data_ptr_t& b) const {
+            return memcmp(a.data, b.data, a.length) < 0;
         }
     };
-    std::map<std::pair<unsigned char*, size_t>, std::vector<std::pair<size_t, size_t> >, cmp_char_ptr> priority_q;
+    std::priority_queue<data_ptr_t, std::vector<data_ptr_t>, cmp_data_ptr> priority_q;
 
     // fill the priority queue
     for (long i = 0; i < threads; ++i) {
-        priority_q[std::make_pair(&buffer[i][0], key_size)].push_back(std::make_pair(i, 0));
+        priority_q.push(data_ptr_t(&buffer[i][0], key_size, i, 0));
     }
     size_t write_at = 0;
     while (!priority_q.empty()) {
-        auto b = priority_q.begin();
-        std::vector<std::pair<size_t, size_t> > ps = b->second;
-        for (auto& p : ps) {
-            memcpy((unsigned char*)base_s.buffer+write_at,
-                   (unsigned char*)buffer[p.first]+p.second, record_size);
-            write_at += record_size;
-        }
-        priority_q.erase(priority_q.begin());
-        for (auto& p : ps) {
-            auto new_off = p.second + record_size;
-            if (new_off + record_size <= chunk_size[p.first]) {
-                unsigned char* c = (unsigned char*)buffer[p.first]+new_off;
-                priority_q[std::make_pair(c, key_size)].push_back(std::make_pair(p.first, new_off));
-            }
+        auto b = priority_q.top();
+        memcpy((unsigned char*)temp_s.buffer+write_at,
+               (unsigned char*)buffer[b.thread]+b.offset, record_size);
+        write_at += record_size;
+        priority_q.pop();
+        auto new_off = b.offset + record_size;
+        if (new_off + record_size <= chunk_size[b.thread]) {
+            unsigned char* c = (unsigned char*)buffer[b.thread]+new_off;
+            priority_q.push(data_ptr_t(c, key_size, b.thread, new_off));
         }
     }
 
     // remove our temp file
-    std::remove(temp_fn.c_str());
+    close_sort(&temp_s);
     close_sort(&base_s);
+    std::rename(temp_fn.c_str(), base_fn.c_str());
 
 }
 
